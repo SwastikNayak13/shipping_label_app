@@ -55,13 +55,15 @@ if uploaded_file is not None:
     # Build dictionary of orders keyed by shipping info
     orders = {}
     for _, row in df.iterrows():
+        phone = str(row["Shipping Phone"]).split(".")[0].strip()
+        phone = f"+{phone}"        
         key = (
             row["Shipping Name"],
             row["Shipping Street"],
             row["Shipping City"],
             row["Shipping Zip"],
             row["Shipping Province"],
-            str(row["Shipping Phone"]).split(".")[0],
+            phone,
         )
         if key not in orders:
             orders[key] = {}
@@ -152,5 +154,6 @@ if uploaded_file is not None:
         file_name="shipping_labels.pdf",
         mime="application/pdf",
     )
+
 
 
