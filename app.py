@@ -4,10 +4,10 @@ from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Paragraph
 
-st.title("📦 Shipping Label Generator (8 per A4 sheet)")
+st.title("📦 Shipping Label Generator (12 per A4 page, auto-fit text)")
 
 uploaded_file = st.file_uploader("Upload Shopify Orders CSV", type=["csv"])
 
@@ -15,9 +15,8 @@ if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
     df.columns = [c.strip() for c in df.columns]
 
-    # Required columns
     required_cols = [
-        "Name",
+        "Lineitem name",  # contains language in parentheses
         "Shipping Name",
         "Shipping Street",
         "Shipping City",
@@ -25,13 +24,14 @@ if uploaded_file is not None:
         "Shipping Province",
         "Shipping Phone",
         "Lineitem quantity",
+        "Name",  # unique order identifier
     ]
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         st.error(f"Missing columns: {', '.join(missing)}")
         st.stop()
 
-    # Fill missing shipping info forward based on Name
+    # Forward-fill shipping info per order
     shipping_cols = [
         "Shipping Name",
         "Shipping Street",
@@ -41,51 +41,106 @@ if uploaded_file is not None:
         "Shipping Phone",
     ]
     df[shipping_cols] = df.groupby("Name")[shipping_cols].ffill()
+    df = df.dropna(subset=shipping_cols)
 
-    # Group by Name (order) and sum Lineitem quantity
-    df_grouped = df.groupby(
-        ["Name"] + shipping_cols, as_index=False
-    )["Lineitem quantity"].sum()
+    # Extract language from Lineitem name
+    def extract_language(lineitem_name):
+        if "(" in lineitem_name and ")" in lineitem_name:
+            return lineitem_name.split("(")[-1].replace(")", "").strip()
+        return None
 
-    # Generate PDF
+    df["Language"] = df["Lineitem name"].apply(extract_language)
+    df = df[df["Language"].notnull()]
+
+    # Build dictionary of orders keyed by shipping info
+    orders = {}
+    for _, row in df.iterrows():
+        key = (
+            row["Shipping Name"],
+            row["Shipping Street"],
+            row["Shipping City"],
+            row["Shipping Zip"],
+            row["Shipping Province"],
+            str(row["Shipping Phone"]).split(".")[0],
+        )
+        if key not in orders:
+            orders[key] = {}
+        orders[key][row["Language"]] = int(row["Lineitem quantity"])
+
+    # PDF setup
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
+    page_width, page_height = A4
 
+    # Layout specifications
+    side_margin = 4 * mm
+    top_bottom_margin = 10 * mm
+    label_width = 100 * mm
+    label_height = 44 * mm
+    cols = 2
+    rows = 6
+    h_spacing = (page_width - 2 * side_margin - cols * label_width) / (cols - 1)
+    v_spacing = (page_height - 2 * top_bottom_margin - rows * label_height) / (rows - 1)
+
+    # Base style
     styles = getSampleStyleSheet()
-    style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 10
-    style.leading = 12
+    style = ParagraphStyle(
+        'label',
+        fontName='Helvetica',
+        fontSize=10,
+        leading=12,
+        wordWrap='CJK'
+    )
 
-    LABEL_WIDTH = 90 * mm
-    LABEL_HEIGHT = 65 * mm
-    LEFT_MARGIN = 20 * mm
-    TOP_MARGIN = 270 * mm
-    H_SPACING = 10 * mm
-    V_SPACING = 5 * mm
+    # Loop through orders
+    for i, (key, lang_quantities) in enumerate(orders.items()):
+        shipping_name, street, city, zip_code, province, phone = key
+        items_text = ", ".join([f"{lang}: {qty}" for lang, qty in lang_quantities.items()])
 
-    for i, row in df_grouped.iterrows():
-        phone = str(row["Shipping Phone"]).split(".")[0]
-        text = f"""
-        <b>DELIVERY TO:</b><br/>
-        {row['Shipping Name']}<br/>
-        {row['Shipping Street']}<br/>
-        {row['Shipping City']}, {row['Shipping Province']} '{row['Shipping Zip']}'<br/>
-        {phone}<br/>
-        <b>Total Quantity:</b> {int(row['Lineitem quantity'])}
-        """
+        text = (
+            f"<b>DELIVERY TO:</b><br/>"
+            f"{shipping_name}<br/>"
+            f"{street}<br/>"
+            f"{city}, {province} '{zip_code}'<br/>"
+            f"{phone}<br/>"
+            f"<b>Items:</b> {items_text}"
+        )
 
-        col = i % 2
-        row_num = (i // 2) % 4
-        x = LEFT_MARGIN + col * (LABEL_WIDTH + H_SPACING)
-        y = TOP_MARGIN - row_num * (LABEL_HEIGHT + V_SPACING)
+        col = i % cols
+        row_num = (i // cols) % rows
+        x = side_margin + col * (label_width + h_spacing)
+        y = page_height - top_bottom_margin - row_num * (label_height + v_spacing)
+
+        # Dynamic font size to fit inside rectangle with inner padding
+        padding = 2 * mm
+        max_width = label_width - 2 * padding
+        max_height = label_height - 2 * padding
+        current_font_size = 10
+        style.fontSize = current_font_size
+        style.leading = current_font_size + 2
 
         para = Paragraph(text, style)
-        w, h = para.wrap(LABEL_WIDTH, LABEL_HEIGHT)
-        para.drawOn(c, x, y - h)
+        w, h = para.wrap(max_width, max_height)
+        while h > max_height and current_font_size > 5:
+            current_font_size -= 1
+            style.fontSize = current_font_size
+            style.leading = current_font_size + 2
+            para = Paragraph(text, style)
+            w, h = para.wrap(max_width, max_height)
 
-        if (i + 1) % 8 == 0:
+        # Draw paragraph with inner padding
+        para.drawOn(c, x + padding, y - h - padding)
+
+        # Draw optional rectangle border for testing alignment
+        # c.rect(x, y - label_height, label_width, label_height, stroke=1, fill=0)
+
+        # New page every full sheet
+        if (i + 1) % (cols * rows) == 0:
             c.showPage()
+
+    # Finalize last page
+    if len(orders) % (cols * rows) != 0:
+        c.showPage()
 
     c.save()
     buffer.seek(0)
@@ -97,3 +152,5 @@ if uploaded_file is not None:
         file_name="shipping_labels.pdf",
         mime="application/pdf",
     )
+
+
