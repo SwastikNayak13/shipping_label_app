@@ -56,7 +56,7 @@ if uploaded_file is not None:
     orders = {}
     for _, row in df.iterrows():
         phone = str(row["Shipping Phone"]).split(".")[0].strip()
-        phone = f"+{phone}"
+        phone = f"+{phone}" if len(phone) > 10 else f"{phone}"
         zip_code = str(row["Shipping Zip"]).strip().replace("'", "").replace('"', '')
         key = (
             row["Shipping Name"],
@@ -104,7 +104,7 @@ if uploaded_file is not None:
             f"<b>DELIVERY TO:</b><br/>"
             f"{shipping_name}<br/>"
             f"{street}<br/>"
-            f"{city}, {province} '{zip_code}'<br/>"
+            f"{city}, {province} {zip_code}<br/>"
             f"{phone}<br/>"
             f"<b>Items:</b> {items_text}"
         )
@@ -155,6 +155,7 @@ if uploaded_file is not None:
         file_name="shipping_labels.pdf",
         mime="application/pdf",
     )
+
 
 
 
